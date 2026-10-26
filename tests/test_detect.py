@@ -35,6 +35,13 @@ def test_head_on_conflict_is_detected_and_predicted():
     assert alerts["alert_time"].iat[0] < events["start"].iat[0]
 
 
+def test_severity_bands():
+    from conflict_detector.detect import classify_severity
+    out = classify_severity([1.0, 3.0, 4.5, 0.5], [100, 300, 200, 900])
+    # kept = max(h/5, v/1000): 0.2, 0.6, 0.9, 0.9
+    assert list(out) == ["Serious", "Significant", "Minor", "Minor"]
+
+
 def test_vertical_separation_prevents_conflict():
     a = straight("AAA", 50.0, 4.0, 6.0, 35000)
     b = straight("BBB", 50.0, 6.0, 4.0, 36000)

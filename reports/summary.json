@@ -2,7 +2,7 @@
   "flights": 500,
   "positions": 91991,
   "los_events": 18,
-  "detection_runtime_s": 2.56,
+  "detection_runtime_s": 2.57,
   "events_predicted_pct": 77.8,
   "median_warning_s": 130.0,
   "predicted_pairs_total": 21,

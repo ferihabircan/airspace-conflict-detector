@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Airspace Conflict Detector</title>
+<meta name="description" content="Loss-of-separation detection, closest-point-of-approach conflict prediction and sector hotspot analysis, with an interactive traffic replay map.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+<script src="common.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<style>
+  #map { height: 520px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); }
+  .replay { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+  .replay input[type="range"] { flex: 1; min-width: 180px; width: auto; }
+  .play { font: inherit; font-size: 14px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; padding: 7px 14px; cursor: pointer; min-width: 84px; }
+  .clock { font-family: "JetBrains Mono", monospace; font-size: 14px; color: var(--muted); min-width: 140px; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin-top: 10px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+  .sev { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+  .sev.Serious { background: #dc262622; color: #ef4444; }
+  .sev.Significant { background: #f59e0b22; color: #d97706; }
+  .sev.Minor { background: #64748b22; color: var(--muted); }
+  #events tbody tr { cursor: pointer; }
+  #events tbody tr:hover, #events tbody tr.sel { background: var(--accent-soft); }
+  .leaflet-container { font-family: inherit; background: var(--bg) !important; }
+  .ap-label { background: none; border: 0; box-shadow: none; color: var(--muted); font-size: 11px; font-weight: 600; padding: 0; }
+  .ap-label::before { display: none; }
+  .split { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 900px) { .split { grid-template-columns: 1fr; } #map { height: 420px; } }
+  .events-scroll { max-height: 520px; overflow: auto; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="#">Airspace Conflict Detector <span>· ATM data portfolio</span></a>
+    <nav>
+      <a href="#replay">Replay</a>
+      <a href="#method">Method</a>
+      <a href="#sectors">Sectors</a>
+      <a href="#run">Run it</a>
+    </nav>
+    <button class="theme-toggle" aria-label="Toggle dark mode">☾</button>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Trajectory analytics · Safety · Capacity</p>
+    <h1>Finding the moments two aircraft got too close, and seeing them coming</h1>
+    <p class="lead">A Python toolkit that scans aircraft trajectories for losses of separation
+      (under 5 NM and 1,000 ft), predicts conflicts minutes ahead from the closest point of approach,
+      and flags overloaded sectors. Works on synthetic traffic or real OpenSky ADS-B data.</p>
+    <div class="btns">
+      <a class="btn primary" href="#replay">Watch the replay</a>
+      <a class="btn ghost" href="https://github.com/ferihabircan/airspace-conflict-detector">View code on GitHub</a>
+    </div>
+    <div class="tags">
+      <span class="tag">Python</span><span class="tag">NumPy</span><span class="tag">SciPy KD-tree</span>
+      <span class="tag">Geodesy</span><span class="tag">OpenSky ADS-B</span><span class="tag">Leaflet</span>
+    </div>
+  </div>
+</div>
+
+<main class="wrap">
+  <div class="kpis" id="kpis"></div>
+
+  <section id="replay">
+    <h2>Traffic replay</h2>
+    <p class="sub">Four hours of en-route traffic over Central Europe. Press play, or click an event
+      in the list to jump to it. Aircraft in a loss of separation turn red.</p>
+    <div class="split">
+      <div class="card">
+        <div id="map"></div>
+        <div class="replay">
+          <button class="play" id="play">▶ Play</button>
+          <input type="range" id="time" min="0" max="14400" step="30" value="0" aria-label="Time">
+          <span class="clock" id="clock"></span>
+        </div>
+        <div class="legend">
+          <span><i style="background:#3b82f6"></i>Aircraft</span>
+          <span><i style="background:#ef4444"></i>In loss of separation</span>
+          <span><i style="background:transparent;border:2px solid #f59e0b"></i>Predicted conflict window</span>
+          <span id="active"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Loss-of-separation events</h3>
+        <p style="margin-bottom:10px">Severity = how much of the minima was kept (closer of horizontal/vertical).</p>
+        <div class="events-scroll table-wrap">
+          <table id="events"><thead><tr><th>Time</th><th>Pair</th><th>Min sep.</th><th>Severity</th><th>Warning</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="method">
+    <h2>Method</h2>
+    <p class="sub">Three steps, each tested against a simple reference so the fast version can be trusted.</p>
+    <div class="grid3">
+      <div class="card"><div class="num">1</div><h3>Fast pair search</h3>
+        <p>Checking every pair of aircraft is O(n²) per time step. Positions are projected to a local
+          plane and indexed in a KD-tree; candidates within 5.5 NM are confirmed with the exact
+          great-circle distance. A unit test checks the result equals brute force.</p></div>
+      <div class="card"><div class="num">2</div><h3>Closest point of approach</h3>
+        <p>For each nearby pair, relative position and velocity give the time and distance of
+          closest approach within the next 5 minutes; altitude is extrapolated with the current
+          vertical rate. A conflict alert fires when both minima would be infringed.</p></div>
+      <div class="card"><div class="num">3</div><h3>Sector load</h3>
+        <p>Airspace is split into 1°×1° cells and two flight-level bands (FL245–345, FL345+).
+          Distinct flights per cell per 20 minutes are compared with a capacity value to flag hotspots.</p></div>
+    </div>
+    <div class="grid2" style="margin-top:16px">
+      <div class="card"><h3>How much warning did we get?</h3>
+        <p>Seconds between the first alert and the start of each loss of separation.</p>
+        <div id="ch-warning" class="chart"></div></div>
+      <div class="card"><h3>How close did they get?</h3>
+        <p>Minimum horizontal vs vertical separation per event. The shaded box is the infringed zone.</p>
+        <div id="ch-sep" class="chart"></div></div>
+    </div>
+    <p class="note">Missed predictions are mostly pairs in climb or descent, where a straight-line vertical
+      extrapolation is weak. Intent-based prediction (flight plan and performance model) is the natural next step.</p>
+  </section>
+
+  <section id="sectors">
+    <h2>Sector hotspots</h2>
+    <p class="sub">Flights per 20-minute window in the busiest sectors. Cells above the capacity of
+      <span id="cap"></span> flights are overloads that would call for a flow measure.</p>
+    <div class="card"><div id="ch-heat" class="chart tall"></div></div>
+  </section>
+
+  <section id="run">
+    <h2>Run it yourself</h2>
+<pre><code>git clone https://github.com/ferihabircan/airspace-conflict-detector
+cd airspace-conflict-detector
+pip install -r requirements.txt
+PYTHONPATH=src python -m conflict_detector.cli                       # synthetic traffic
+PYTHONPATH=src python -m conflict_detector.cli --opensky states.csv  # real ADS-B data
+PYTHONPATH=src python scripts/export_site_data.py                    # refresh this website
+PYTHONPATH=src pytest -q</code></pre>
+    <p class="note">Simplifications: 5 NM / 1,000 ft everywhere above FL100 (real minima depend on airspace),
+      grid sectors instead of real sector polygons, and illustrative severity bands rather than the EUROCONTROL Risk Analysis Tool.</p>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <strong>More from this ATM data portfolio</strong>
+    <div class="others">
+      <a href="https://ferihabircan.github.io/atfm-delay-predictor/"><strong>ATFM Delay Predictor</strong>
+        <span>Gradient boosting with prediction intervals and a what-if tool</span></a>
+      <a href="https://ferihabircan.github.io/atm-performance-dashboard/"><strong>ATM Performance &amp; CO2 Dashboard</strong>
+        <span>Punctuality, ATFM delay, taxi-out and CO2 KPIs, live in the browser</span></a>
+    </div>
+    Feriha Bircan · <a href="https://github.com/ferihabircan">github.com/ferihabircan</a> · MIT License ·
+    Borders: <a href="https://www.naturalearthdata.com/">Natural Earth</a> via world-atlas
+  </div>
+</footer>
+
+<script>
+let D, map, land, dots = {}, trackLayer, eventLayer, t = 0, timer = null;
+const SEV = { Serious: "#ef4444", Significant: "#f59e0b", Minor: "#94a3b8" };
+const hhmm = (s) => `${String(Math.floor(s / 3600)).padStart(2, "0")}:${String(Math.floor(s % 3600 / 60)).padStart(2, "0")}`;
+
+function kpis() {
+  const s = D.summary;
+  const items = [
+    [s.events, "Losses of separation", `in ${s.positions.toLocaleString("en")} positions`],
+    [s.runtime_s + " s", "Detection runtime", "KD-tree, checked vs brute force"],
+    [s.predicted_pct + "%", "Predicted in advance", `median ${Math.round(s.median_warning_s)} s warning`],
+    [s.overloaded_windows, "Overloaded sector-windows", `capacity ${s.capacity} per 20 min`],
+  ];
+  document.getElementById("kpis").innerHTML = items.map(([v, l, d]) =>
+    `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div><div class="d">${d}</div></div>`).join("");
+}
+
+// Country outlines from Natural Earth (world-atlas), styled with the page theme: no tile API key needed.
+function landStyle() {
+  return { color: css("--border"), weight: 1, fillColor: css("--surface-2"), fillOpacity: 1 };
+}
+function loadLand() {
+  fetch("https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-50m.json").then(r => r.json()).then(topo => {
+    land = L.geoJSON(topojson.feature(topo, topo.objects.countries), { style: landStyle, interactive: false }).addTo(map);
+    land.bringToBack();
+  });
+}
+
+function posAt(cs, time) {
+  const [t0, step, pts] = D.flights[cs];
+  const i = (time - t0) / step;
+  if (i < 0 || i > pts.length - 1) return null;
+  const a = pts[Math.floor(i)], b = pts[Math.min(Math.ceil(i), pts.length - 1)], f = i - Math.floor(i);
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, Math.round(a[2] + (b[2] - a[2]) * f)];
+}
+
+function setupMap() {
+  map = L.map("map", { zoomControl: true, attributionControl: false }).setView([50.4, 5.6], 6);
+  loadLand();
+  for (const [code, [lat, lon]] of Object.entries(D.airports)) {
+    L.circleMarker([lat, lon], { radius: 3, color: css("--muted"), weight: 1, fillOpacity: 1 })
+      .bindTooltip(code, { permanent: true, direction: "right", className: "ap-label", offset: [4, 0] }).addTo(map);
+  }
+  trackLayer = L.layerGroup().addTo(map);
+  eventLayer = L.layerGroup().addTo(map);
+  for (const e of D.events) {
+    L.circle([e.lat, e.lon], { radius: 9260, color: SEV[e.severity], weight: 1.5, fillOpacity: .08 })
+      .bindPopup(popup(e)).addTo(eventLayer);
+  }
+  const r = document.getElementById("time");
+  r.max = D.summary.duration_s;
+  r.oninput = () => { stop(); t = +r.value; draw(); };
+  document.getElementById("play").onclick = () => (timer ? stop() : play());
+}
+
+function popup(e) {
+  return `<strong>${e.ac1} × ${e.ac2}</strong><br>${hhmm(e.start)} for ${e.duration_s} s<br>` +
+    `closest ${e.min_h_nm} NM / ${e.min_v_ft} ft<br>FL${e.fl1} / FL${e.fl2}<br>` +
+    `warning: ${e.warning_s == null ? "not predicted" : e.warning_s + " s"}`;
+}
+
+function draw() {
+  document.getElementById("time").value = t;
+  document.getElementById("clock").textContent = `T+${hhmm(t)}`;
+  const inLos = new Set(), soon = new Set();
+  for (const e of D.events) {
+    if (t >= e.start && t <= e.end + 30) { inLos.add(e.ac1); inLos.add(e.ac2); }
+    else if (e.warning_s != null && t >= e.start - e.warning_s && t < e.start) { soon.add(e.ac1); soon.add(e.ac2); }
+  }
+  let n = 0;
+  for (const cs in D.flights) {
+    const p = posAt(cs, t);
+    if (!p) { if (dots[cs]) { dots[cs].remove(); delete dots[cs]; } continue; }
+    n++;
+    const red = inLos.has(cs), amber = soon.has(cs);
+    const style = { radius: red || amber ? 5 : 2.6, weight: amber ? 2 : 0,
+      color: amber ? "#f59e0b" : "#3b82f6", fillColor: red ? "#ef4444" : "#3b82f6", fillOpacity: .9 };
+    if (!dots[cs]) dots[cs] = L.circleMarker([p[0], p[1]], style).bindTooltip("").addTo(map);
+    else dots[cs].setLatLng([p[0], p[1]]).setStyle(style);
+    dots[cs].setTooltipContent(`${cs} · FL${p[2]}`);
+    if (red || amber) dots[cs].bringToFront();
+  }
+  document.getElementById("active").textContent = `${n} aircraft airborne`;
+}
+
+function play() {
+  document.getElementById("play").textContent = "❚❚ Pause";
+  timer = setInterval(() => { t = (t + 30) % D.summary.duration_s; draw(); }, 60);
+}
+function stop() {
+  clearInterval(timer); timer = null;
+  document.getElementById("play").textContent = "▶ Play";
+}
+
+function showEvent(e, row) {
+  stop();
+  document.querySelectorAll("#events tr.sel").forEach(r => r.classList.remove("sel"));
+  row.classList.add("sel");
+  t = Math.max(0, e.start - 120);
+  trackLayer.clearLayers();
+  for (const cs of [e.ac1, e.ac2]) {
+    const pts = D.flights[cs][2].map(p => [p[0], p[1]]);
+    L.polyline(pts, { color: SEV[e.severity], weight: 2, opacity: .8, dashArray: "4 4" }).addTo(trackLayer);
+  }
+  map.flyTo([e.lat, e.lon], 8, { duration: .8 });
+  draw();
+  setTimeout(() => { t = e.start; draw(); L.popup().setLatLng([e.lat, e.lon]).setContent(popup(e)).openOn(map); }, 900);
+}
+
+function eventsTable() {
+  const tb = document.querySelector("#events tbody");
+  const rows = [...D.events].sort((a, b) => a.start - b.start);
+  tb.innerHTML = "";
+  for (const e of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${hhmm(e.start)}</td><td>${e.ac1.slice(3)}×${e.ac2.slice(3)}</td>` +
+      `<td>${e.min_h_nm} NM<br><span style="color:var(--muted)">${e.min_v_ft} ft</span></td>` +
+      `<td><span class="sev ${e.severity}">${e.severity}</span></td>` +
+      `<td>${e.warning_s == null ? "–" : e.warning_s + " s"}</td>`;
+    tr.onclick = () => showEvent(e, tr);
+    tb.appendChild(tr);
+  }
+}
+
+function charts() {
+  const accent = css("--accent"), muted = css("--muted");
+  const w = D.events.filter(e => e.warning_s != null).map(e => e.warning_s);
+  Plotly.react("ch-warning", [{ type: "histogram", x: w, xbins: { size: 30 }, marker: { color: accent },
+    hovertemplate: "%{x} s: %{y} events<extra></extra>" }],
+    baseLayout({ bargap: .08, xaxis: { title: "Warning time (s)" }, yaxis: { title: "Events" } }), plotConfig);
+
+  const traces = Object.keys(SEV).map(s => {
+    const ev = D.events.filter(e => e.severity === s);
+    return { x: ev.map(e => e.min_h_nm), y: ev.map(e => e.min_v_ft), mode: "markers", name: s,
+      marker: { color: SEV[s], size: 10, line: { width: 1, color: css("--surface") } },
+      text: ev.map(e => `${e.ac1}×${e.ac2}`), hovertemplate: "%{text}<br>%{x} NM, %{y} ft<extra></extra>" };
+  });
+  Plotly.react("ch-sep", traces, baseLayout({
+    shapes: [{ type: "rect", x0: 0, x1: 5, y0: 0, y1: 1000, fillcolor: "#ef444414", line: { color: "#ef444466", dash: "dot" } }],
+    xaxis: { title: "Min horizontal separation (NM)", range: [0, 5.5] },
+    yaxis: { title: "Min vertical separation (ft)", range: [0, 1100] } }), plotConfig);
+
+  const h = D.heatmap, cap = D.summary.capacity;
+  document.getElementById("cap").textContent = cap;
+  Plotly.react("ch-heat", [{
+    type: "heatmap", z: h.values, y: h.sectors.map(s => s.replace("_", " · ")),
+    x: h.windows.map(w => `T+${hhmm(w * 60)}`), colorscale: isDark()
+      ? [[0, "#151d28"], [.5, "#1e4b8f"], [cap / Math.max(...h.values.flat()), "#6ea8ff"], [1, "#ef4444"]]
+      : [[0, "#f3f6fa"], [.5, "#9cc3f5"], [cap / Math.max(...h.values.flat()), "#1f5aa6"], [1, "#dc2626"]],
+    hovertemplate: "%{y}<br>%{x}: %{z} flights<extra></extra>", colorbar: { title: "flights", thickness: 12 },
+  }], baseLayout({ margin: { l: 130, r: 10, t: 10, b: 60 }, xaxis: { tickangle: -45 } }), plotConfig);
+}
+
+fetch("data.json").then(r => r.json()).then(data => {
+  D = data;
+  kpis(); setupMap(); eventsTable(); charts();
+  const first = [...D.events].sort((a, b) => a.start - b.start)[0];
+  t = first ? Math.max(0, first.start - 300) : 0;
+  draw();
+  onThemeChange(() => { if (land) land.setStyle(landStyle()); charts(); });
+});
+</script>
+</body>
+</html>

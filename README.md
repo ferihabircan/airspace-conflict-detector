@@ -1,5 +1,7 @@
 # Airspace Conflict & Sector Hotspot Detector
 
+**🌐 Live project page with interactive traffic replay map: https://ferihabircan.github.io/airspace-conflict-detector/**
+
 Python toolkit that processes aircraft trajectories (synthetic, or real
 ADS-B state vectors from the [OpenSky Network](https://opensky-network.org/))
 and answers three ATM questions:
@@ -20,7 +22,7 @@ and answers three ATM questions:
 | Metric | Value |
 |---|---|
 | Positions processed | 91,991 |
-| Loss-of-separation events | 18 |
+| Loss-of-separation events | 18 (9 serious, 4 significant, 5 minor) |
 | Detection runtime | ~2.5 s (KD-tree search) |
 | Events predicted before they happened | 77.8% |
 | Median warning time | 130 s |
@@ -47,6 +49,9 @@ limitation of linear STCA-style prediction and a natural next step
   distance at CPA; vertical position is extrapolated with the current vertical
   rate.
 - **Sectors**: grid cells × flight-level bands (FL245–345 lower, FL345+ upper).
+- **Severity**: each event is banded by how much of the minima was kept
+  (closer of horizontal/vertical): under 50% Serious, under 75% Significant,
+  otherwise Minor. Illustrative, not the EUROCONTROL Risk Analysis Tool.
 
 ## Usage
 
@@ -56,6 +61,7 @@ pip install -r requirements.txt
 PYTHONPATH=src python -m conflict_detector.cli                 # synthetic
 PYTHONPATH=src python -m conflict_detector.cli --opensky states.csv --capacity 40
 PYTHONPATH=src pytest -q
+PYTHONPATH=src python scripts/export_site_data.py   # refresh docs/ website data
 ```
 
 OpenSky input needs the columns `time, icao24, callsign, lat, lon,
@@ -81,5 +87,7 @@ src/conflict_detector/
   detect.py        loss-of-separation detection, CPA conflict prediction
   sectors.py       sector assignment, occupancy, hotspots
   cli.py           end-to-end run, CSV/JSON reports, plots
+scripts/           export_site_data.py: data for the project website
+docs/              project website with replay map (GitHub Pages)
 tests/             pytest suite incl. KD-tree vs brute-force check
 ```

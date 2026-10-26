@@ -61,7 +61,7 @@ def group_events(losses: pd.DataFrame, step_s: int = 10) -> pd.DataFrame:
     """Merge consecutive time steps of the same pair into one event."""
     if losses.empty:
         return pd.DataFrame(columns=["ac1", "ac2", "start", "end", "duration_s",
-                                     "min_h_nm", "min_v_ft"])
+                                     "min_h_nm", "min_v_ft", "severity"])
     losses = losses.sort_values(["ac1", "ac2", "time"])
     new = (losses.groupby(["ac1", "ac2"])["time"].diff() != step_s)
     losses["event"] = new.cumsum()
@@ -69,7 +69,20 @@ def group_events(losses: pd.DataFrame, step_s: int = 10) -> pd.DataFrame:
         ac1=("ac1", "first"), ac2=("ac2", "first"), start=("time", "min"),
         end=("time", "max"), min_h_nm=("h_nm", "min"), min_v_ft=("v_ft", "min"))
     ev["duration_s"] = ev["end"] - ev["start"] + step_s
+    ev["severity"] = classify_severity(ev["min_h_nm"], ev["min_v_ft"])
     return ev.reset_index(drop=True)
+
+
+def classify_severity(min_h_nm, min_v_ft, h_nm: float = H_SEP_NM,
+                      v_ft: float = V_SEP_FT) -> np.ndarray:
+    """Simple severity bands from how much of the minima was kept.
+
+    The closer of the two separations (as a share of its minimum) decides:
+    < 50% Serious, < 75% Significant, otherwise Minor. Illustrative only;
+    official classification (e.g. the EUROCONTROL RAT) uses more factors.
+    """
+    kept = np.maximum(np.asarray(min_h_nm) / h_nm, np.asarray(min_v_ft) / v_ft)
+    return np.select([kept < 0.5, kept < 0.75], ["Serious", "Significant"], "Minor")
 
 
 def predict_conflicts(df: pd.DataFrame, lookahead_s: float = 300,
